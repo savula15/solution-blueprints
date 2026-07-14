@@ -10,11 +10,11 @@
 // (axis.toolcall) and inference-plane (llm.request) events sit side by side and
 // correlate by identity.session.
 //
-// Privacy by default: we ship metadata only — model, timing, token counts,
-// prompt/response CHAR COUNTS, and the DefenseClaw verdicts (findings/severity).
-// We do NOT ship prompt or completion TEXT (mirrors the connector shipping
-// exit/duration, not stdout). DefenseClaw sees the content for scanning; Splunk
-// sees only the verdict.
+// Content: prompt/completion text is emitted when the caller passes it
+// (promptContent/completionContent). server.js includes it by default, redacted
+// (see redact.js; LLM_CAPTURE_CONTENT=off for metadata only, or
+// GLASSBOX_ALLOW_RAW_LLM_CONTENT=true for raw text). Token/char counts and the
+// DefenseClaw verdicts (findings/severity) are always included.
 //
 //   llm.session_start { event, time, identity, policy{id,source} }
 //   llm.request       { event, time, identity, policy, request{...}, decision,
@@ -36,11 +36,14 @@ const SOURCETYPE = "axis:llm";
 const INDEX = "axis";
 
 export class LlmEventSink {
-  constructor({ sinkPath, hecUrl, hecToken, fetchImpl } = {}) {
+  constructor({ sinkPath, hecUrl, hecToken, fetchImpl, otlp } = {}) {
     this.sinkPath = sinkPath || null;
     this.hecUrl = hecUrl ? hecUrl.replace(/\/+$/, "") : null;
     this.hecToken = hecToken || "fake-token";
     this.fetch = fetchImpl || globalThis.fetch;
+    // Optional additive OTLP span export to a local collector (see otlp.js). HEC
+    // stays the audit source of truth; this is a second consumer of the record.
+    this.otlp = otlp || null;
   }
 
   async emit(event) {
@@ -49,6 +52,9 @@ export class LlmEventSink {
     }
     if (this.hecUrl) {
       await this.#postHec(event).catch(() => {});
+    }
+    if (this.otlp) {
+      await this.otlp.export(event).catch(() => {});
     }
     return event;
   }
@@ -141,6 +147,9 @@ export function buildLlmRequest({
   defenseclawResponse,
   trace,
   gpu,
+  promptContent = null,
+  completionContent = null,
+  contentRedacted = true,
 }) {
   // Each LLM call is its own span, parented to the turn's root span.
   const spanId = newSpanId();
@@ -177,6 +186,7 @@ export function buildLlmRequest({
       stream: Boolean(stream),
       messages: messages ?? null,
       prompt_chars: promptChars ?? null,
+      ...(promptContent != null ? { [contentRedacted ? "prompt_redacted" : "prompt_text"]: promptContent } : {}),
     },
     decision,
     routing: routingBlock(routing),
@@ -190,6 +200,7 @@ export function buildLlmRequest({
           completion_tokens: result.completionTokens ?? null,
           completion_chars: result.completionChars ?? null,
           stop_reason: result.stopReason ?? null,
+          ...(completionContent != null ? { [contentRedacted ? "completion_redacted" : "completion_text"]: completionContent } : {}),
         }
       : {
           status: null,

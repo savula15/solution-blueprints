@@ -208,11 +208,14 @@ fi
 if [ "${LEMON_UP:-0}" -eq 1 ]; then
   log "=== Stage 5: unified session (proxy + connector share AXIS_SESSION) ==="
   SESS="cc-itest-unified-$$"
+  STATE="${TMPDIR:-/tmp}/axis-trace-$SESS.json"
   PROXY_PORT="${PROXY_PORT:-13399}"
   : > "$SINK"
   # LEMON_ROUTER stays off (plain passthrough) so no router binary is needed.
   # LLM_SESSION is NOT exported: the proxy must fall back to AXIS_SESSION.
+  # AXIS_TRACE_STATE is pinned so the Stage 6 connector can share the same per-turn trace.
   AXIS_SESSION="$SESS" \
+  AXIS_TRACE_STATE="$STATE" \
   LEMON_PROXY_PORT="$PROXY_PORT" \
   LEMON_UPSTREAM="http://127.0.0.1:$LEMONADE_PORT" \
   DEFENSECLAW_URL="http://127.0.0.1:$DC_PORT" \
@@ -290,9 +293,16 @@ if [ "${RUN_CC:-1}" -eq 1 ] && [ "${LEMON_UP:-0}" -eq 1 ] && command -v claude >
     "DEFENSECLAW_URL": "http://127.0.0.1:$DC_PORT", "DEFENSECLAW_MODE": "action",
     "DEFENSECLAW_GATEWAY_TOKEN": "$DEFENSECLAW_GATEWAY_TOKEN",
     "SPLUNK_SINK": "$SINK", "SPLUNK_HEC_URL": "$HEC_URL_EFF",
-    "SPLUNK_HEC_TOKEN": "$HEC_TOKEN_EFF" } } } }
+    "SPLUNK_HEC_TOKEN": "$HEC_TOKEN_EFF",
+    "AXIS_SESSION": "${SESS:-}", "AXIS_TRACE_STATE": "${STATE:-}",
+    "OTEL_EXPORTER_OTLP_ENDPOINT": "${OTEL_EXPORTER_OTLP_ENDPOINT:-}",
+    "AXIS_TRACE_PROPAGATION": "${AXIS_TRACE_PROPAGATION:-off}" } } } }
 EOF
-  ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-http://127.0.0.1:$LEMONADE_PORT}" \
+  # Route Claude through the proxy when it is up (inference is audited + mints the
+  # per-turn trace the connector joins); fall back to Lemonade directly otherwise.
+  CC_BASE="http://127.0.0.1:$LEMONADE_PORT"
+  [ "${PROXY_UP:-0}" -eq 1 ] && CC_BASE="http://127.0.0.1:$PROXY_PORT"
+  ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-$CC_BASE}" \
   ANTHROPIC_AUTH_TOKEN="lemonade-local" \
   ANTHROPIC_DEFAULT_OPUS_MODEL="$LEMON_MODEL" \
   ANTHROPIC_DEFAULT_SONNET_MODEL="$LEMON_MODEL" \

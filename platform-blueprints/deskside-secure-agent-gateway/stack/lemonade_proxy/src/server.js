@@ -36,6 +36,8 @@ import {
   buildLlmSessionEnd,
   buildLlmRequest,
 } from "./llm_events.js";
+import { otlpFromEnv } from "./otlp.js";
+import { redactText } from "./redact.js";
 import { extractRequest, extractResponseJson, parseAnthropicSSE, isNewUserTurn } from "./anthropic.js";
 
 const cfg = {
@@ -47,6 +49,12 @@ const cfg = {
   defenseclawMode: process.env.DEFENSECLAW_INFERENCE_MODE || "observe",
   defenseclawFailOpen: process.env.DEFENSECLAW_INFERENCE_FAIL_OPEN === "0" ? false : true,
   inspectResponse: process.env.DEFENSECLAW_INSPECT_RESPONSE !== "0",
+  // Forward the turn's W3C traceparent on the DefenseClaw consult (opt-in).
+  tracePropagation: process.env.AXIS_TRACE_PROPAGATION === "on",
+  // LLM input/output capture: on by default, redacted. Off = metadata only;
+  // GLASSBOX_ALLOW_RAW_LLM_CONTENT=true emits raw un-redacted text.
+  captureContent: process.env.LLM_CAPTURE_CONTENT !== "off",
+  allowRawContent: process.env.GLASSBOX_ALLOW_RAW_LLM_CONTENT === "true",
   splunkSink: process.env.SPLUNK_SINK || null,
   splunkHecUrl: process.env.SPLUNK_HEC_URL || null,
   splunkHecToken: process.env.SPLUNK_HEC_TOKEN || "fake-token",
@@ -95,11 +103,30 @@ const router = new SemanticRouterClient({
 // without it, a "frontier" decision still routes local (fail-safe) but is
 // recorded so the operator can see the missing credential.
 const frontierReady = Boolean(cfg.frontierAuthKey);
+// Additive, opt-in OTLP export to a local collector (off unless an OTLP endpoint
+// is configured). This plane is the trace authority, so its exporter emits the root.
+const otlp = otlpFromEnv(process.env, { emitRoot: true });
 const sink = new LlmEventSink({
   sinkPath: cfg.splunkSink,
   hecUrl: cfg.splunkHecUrl,
   hecToken: cfg.splunkHecToken,
+  otlp,
 });
+
+/** W3C traceparent for the current turn so DefenseClaw can correlate (and, on a
+ *  trusted loopback route, parent) its telemetry onto the same trace. Only sent
+ *  when AXIS_TRACE_PROPAGATION=on. */
+function traceparentFor(trace) {
+  if (!cfg.tracePropagation || !trace?.trace_id || !trace?.root_span_id) return null;
+  return `00-${trace.trace_id}-${trace.root_span_id}-01`;
+}
+
+/** Prompt/completion text for the event: redacted by default, raw when
+ *  GLASSBOX_ALLOW_RAW_LLM_CONTENT=true, or null when capture is off. */
+function contentFor(text) {
+  if (!cfg.captureContent || !text) return null;
+  return cfg.allowRawContent ? text : redactText(text);
+}
 
 const MESSAGE_PATHS = ["/v1/messages", "/v1/chat/completions"];
 const isMessageEndpoint = (url) => MESSAGE_PATHS.some((p) => url.split("?")[0].endsWith(p));
@@ -165,6 +192,7 @@ async function handle(req, res) {
     session: identity.session,
     model: reqInfo.model,
     content: reqInfo.promptText,
+    traceparent: traceparentFor(trace),
   });
 
   // In action mode a real block short-circuits upstream.
@@ -180,6 +208,8 @@ async function handle(req, res) {
           stream: reqInfo.stream,
           messages: reqInfo.messages,
           promptChars: reqInfo.promptText.length,
+          promptContent: contentFor(reqInfo.promptText),
+          contentRedacted: !cfg.allowRawContent,
           decision: "block",
           result: { status: 403, durationMs },
           routing: null,
@@ -261,6 +291,8 @@ async function handle(req, res) {
           stream: reqInfo.stream,
           messages: reqInfo.messages,
           promptChars: reqInfo.promptText.length,
+          promptContent: contentFor(reqInfo.promptText),
+          contentRedacted: !cfg.allowRawContent,
           decision: "unknown",
           result: { status: 502, durationMs },
           routing: routed,
@@ -300,6 +332,7 @@ async function handle(req, res) {
       session: identity.session,
       model: reqInfo.model,
       content: parsed.completionText,
+      traceparent: traceparentFor(trace),
     });
   }
 
@@ -320,6 +353,9 @@ async function handle(req, res) {
         stream: reqInfo.stream,
         messages: reqInfo.messages,
         promptChars: reqInfo.promptText.length,
+        promptContent: contentFor(reqInfo.promptText),
+        completionContent: contentFor(parsed.completionText),
+        contentRedacted: !cfg.allowRawContent,
         decision,
         result: {
           status: upstream.status,

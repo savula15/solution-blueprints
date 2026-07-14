@@ -28,7 +28,7 @@ const SOURCETYPE = "axis:toolcall";
 const INDEX = "axis";
 
 export class SplunkEventSink {
-  constructor({ sinkPath, hecUrl, hecToken, fetchImpl, reachableTimeoutMs } = {}) {
+  constructor({ sinkPath, hecUrl, hecToken, fetchImpl, reachableTimeoutMs, otlp } = {}) {
     this.sinkPath = sinkPath || null;
     this.hecUrl = hecUrl ? hecUrl.replace(/\/+$/, "") : null;
     this.hecToken = hecToken || "fake-token";
@@ -37,6 +37,9 @@ export class SplunkEventSink {
     // fail-closed gate refuse quickly instead of hanging on a TCP timeout.
     this.reachableTimeoutMs =
       reachableTimeoutMs ?? (Number(process.env.AUDIT_REACHABLE_TIMEOUT_MS) || 1500);
+    // Optional additive OTLP span export to a local collector (see otlp.js). HEC
+    // stays the audit source of truth; this is a second consumer of the record.
+    this.otlp = otlp || null;
   }
 
   /** Append one event to the JSONL sink and optionally POST it to a HEC. The
@@ -48,6 +51,9 @@ export class SplunkEventSink {
     }
     if (this.hecUrl) {
       await this.#postHec(event).catch(() => {});
+    }
+    if (this.otlp) {
+      await this.otlp.export(event).catch(() => {});
     }
     return event;
   }

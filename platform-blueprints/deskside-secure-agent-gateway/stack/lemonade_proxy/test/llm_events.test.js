@@ -164,6 +164,70 @@ test("llm.request with no result/verdicts has null fields", () => {
   assert.equal(e.defenseclaw_response, null);
 });
 
+test("llm.request includes redacted content when provided", () => {
+  const e = buildLlmRequest({
+    identity: id(),
+    seq: 0,
+    model: "m",
+    endpoint: "/v1/messages",
+    stream: false,
+    messages: 1,
+    promptChars: 5,
+    decision: "allow",
+    result: { status: 200, durationMs: 1, promptTokens: 1, completionTokens: 1, completionChars: 5, stopReason: "end_turn" },
+    defenseclawRequest: null,
+    defenseclawResponse: null,
+    promptContent: "hello",
+    completionContent: "world",
+    contentRedacted: true,
+  });
+  assert.equal(e.request.prompt_redacted, "hello");
+  assert.equal(e.result.completion_redacted, "world");
+  assert.equal(e.request.prompt_text, undefined);
+  assert.equal(e.result.completion_text, undefined);
+});
+
+test("raw content uses prompt_text/completion_text when contentRedacted=false", () => {
+  const e = buildLlmRequest({
+    identity: id(),
+    seq: 0,
+    model: "m",
+    endpoint: "/v1/messages",
+    stream: false,
+    messages: 1,
+    promptChars: 3,
+    decision: "allow",
+    result: { status: 200, durationMs: 1 },
+    defenseclawRequest: null,
+    defenseclawResponse: null,
+    promptContent: "raw-prompt",
+    completionContent: "raw-completion",
+    contentRedacted: false,
+  });
+  assert.equal(e.request.prompt_text, "raw-prompt");
+  assert.equal(e.result.completion_text, "raw-completion");
+  assert.equal(e.request.prompt_redacted, undefined);
+});
+
+test("no content fields when caller omits content (metadata only)", () => {
+  const e = buildLlmRequest({
+    identity: id(),
+    seq: 0,
+    model: "m",
+    endpoint: "/v1/messages",
+    stream: false,
+    messages: 1,
+    promptChars: 3,
+    decision: "allow",
+    result: { status: 200, durationMs: 1 },
+    defenseclawRequest: null,
+    defenseclawResponse: null,
+  });
+  assert.equal(e.request.prompt_redacted, undefined);
+  assert.equal(e.request.prompt_text, undefined);
+  assert.equal(e.result.completion_redacted, undefined);
+});
+
 test("sink appends JSONL and posts HEC envelope with axis:llm sourcetype", async () => {
   const dir = await mkdtemp(join(tmpdir(), "llmsink-"));
   const path = join(dir, "events.jsonl");

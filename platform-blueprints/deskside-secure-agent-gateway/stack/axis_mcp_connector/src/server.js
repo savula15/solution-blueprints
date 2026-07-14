@@ -38,6 +38,7 @@ import {
   buildSessionEnd,
   buildToolCall,
 } from "./splunk_events.js";
+import { otlpFromEnv } from "./otlp.js";
 
 const cfg = {
   axisBin: process.env.AXIS_BIN || "axis",
@@ -54,6 +55,8 @@ const cfg = {
   // unreachable, so no command ever runs without an audit trail. Default off
   // preserves the prior best-effort behaviour (existing suites unaffected).
   auditRequired: process.env.AUDIT_REQUIRED === "1",
+  // Forward the turn's W3C traceparent on the DefenseClaw consult (opt-in).
+  tracePropagation: process.env.AXIS_TRACE_PROPAGATION === "on",
 };
 
 const identity = new SessionIdentity(process.env);
@@ -66,11 +69,23 @@ const guard = new DefenseClawClient({
   mode: cfg.defenseclawMode,
   failOpen: cfg.defenseclawFailOpen,
 });
+// Additive, opt-in OTLP export to a local collector (off unless an OTLP endpoint
+// is configured). The inference plane owns the root, so this exporter never emits it.
+const otlp = otlpFromEnv(process.env);
 const sink = new SplunkEventSink({
   sinkPath: cfg.splunkSink,
   hecUrl: cfg.splunkHecUrl,
   hecToken: cfg.splunkHecToken,
+  otlp,
 });
+
+/** W3C traceparent for the current turn so DefenseClaw can correlate (and, on a
+ *  trusted loopback route, parent) its telemetry onto the same trace. Only sent
+ *  when AXIS_TRACE_PROPAGATION=on. */
+function traceparentFor(trace) {
+  if (!cfg.tracePropagation || !trace?.trace_id || !trace?.root_span_id) return null;
+  return `00-${trace.trace_id}-${trace.root_span_id}-01`;
+}
 
 const log = (...a) => console.error("[axis-mcp]", ...a);
 
@@ -103,6 +118,7 @@ server.tool(
       tool: "run",
       argv,
       cwd: process.cwd(),
+      traceparent: traceparentFor(trace),
     });
 
     if (verdict.decision === "block") {
@@ -168,6 +184,7 @@ server.tool(
         session: identity.session,
         tool: "run",
         content: `${result.stdout}\n${result.stderr}`.slice(0, 8192),
+        traceparent: traceparentFor(trace),
       });
     }
 

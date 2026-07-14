@@ -1,0 +1,55 @@
+# Copyright © Advanced Micro Devices, Inc., or its affiliates.
+#
+# SPDX-License-Identifier: MIT
+
+# Deskside OTel Collector — receives OTLP from the AMD producers (lemonade_proxy,
+# axis_mcp_connector) and, optionally, DefenseClaw, then batches and exports to
+# Splunk AO / Galileo. This is the single egress: one credential, one retry queue.
+#
+# The producers stay HEC-first for the Splunk audit view; this pipeline is the
+# additive OTLP path that lights up the AO trace and Tokenomics views. It is only
+# in play when the producers are pointed at it:
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+#
+# Egress is configured through the environment:
+#   GALILEO_OTLP_ENDPOINT   full traces endpoint (e.g. https://api.galileo.ai/otel/traces)
+#   GALILEO_API_KEY         Galileo/AO API key (server-side only)
+#   GALILEO_PROJECT         AO project name
+#   GALILEO_LOG_STREAM      AO logstream name
+#
+# Runs with a standard otelcol-contrib or splunk-otel-collector binary:
+#   otelcol-contrib --config stack/otel-collector/config.yaml
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+      grpc:
+        endpoint: 127.0.0.1:4317
+
+processors:
+  batch:
+    timeout: 1s
+
+exporters:
+  otlphttp/galileo:
+    traces_endpoint: ${env:GALILEO_OTLP_ENDPOINT}
+    headers:
+      Galileo-API-Key: ${env:GALILEO_API_KEY}
+      project: ${env:GALILEO_PROJECT}
+      logstream: ${env:GALILEO_LOG_STREAM}
+    retry_on_failure:
+      enabled: true
+    sending_queue:
+      enabled: true
+  # Uncomment to eyeball spans locally during bring-up.
+  # debug:
+  #   verbosity: normal
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/galileo]
