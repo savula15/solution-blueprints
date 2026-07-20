@@ -71,7 +71,7 @@ function sanitizeSchema(node) {
  *  Handles: system (string|blocks) -> a leading system message; user/assistant
  *  turns; tool_use blocks -> assistant.tool_calls; tool_result blocks -> role:tool
  *  messages; Anthropic `tools` -> OpenAI `tools` (function schema). */
-export function anthropicToOpenAI(body, servedModel) {
+export function anthropicToOpenAI(body, servedModel, { disableThinking = false } = {}) {
   const messages = [];
 
   if (body?.system) {
@@ -130,6 +130,10 @@ export function anthropicToOpenAI(body, servedModel) {
     stream: Boolean(body?.stream),
   };
   if (typeof body?.temperature === "number") out.temperature = body.temperature;
+  // Qwen3-family "thinking" models otherwise spend the token budget on
+  // reasoning_content and leave content empty; disable it so the local model
+  // returns a direct answer the client can render.
+  if (disableThinking) out.chat_template_kwargs = { enable_thinking: false };
   if (Array.isArray(body?.tools) && body.tools.length) {
     out.tools = body.tools.map((t) => ({
       type: "function",

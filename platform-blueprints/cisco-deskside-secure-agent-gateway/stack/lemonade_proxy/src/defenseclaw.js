@@ -39,13 +39,17 @@ export class DefenseClawInferenceClient {
     return h;
   }
 
-  async #post(path, body) {
+  async #post(path, body, { traceparent } = {}) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
     try {
+      // Forward the turn's W3C trace context so DefenseClaw can correlate (and, on
+      // a trusted loopback route, parent) its telemetry onto the same trace.
+      const headers = this.#headers();
+      if (traceparent) headers["traceparent"] = traceparent;
       const res = await this.fetch(`${this.baseUrl}${path}`, {
         method: "POST",
-        headers: this.#headers(),
+        headers,
         body: JSON.stringify(body),
         signal: ctrl.signal,
       });
@@ -58,7 +62,7 @@ export class DefenseClawInferenceClient {
   }
 
   /** Scan the prompt before it reaches the model. */
-  async inspectRequest({ session, user, userSource, model, content }) {
+  async inspectRequest({ session, user, userSource, model, content, traceparent }) {
     if (!content) return null;
     try {
       const verdict = await this.#post("/api/v1/inspect/request", {
@@ -69,7 +73,7 @@ export class DefenseClawInferenceClient {
         // verified — user_source records the trust level).
         user,
         user_source: userSource,
-      });
+      }, { traceparent });
       return this.#normalize(verdict);
     } catch (err) {
       return this.#unreachable(err);
@@ -77,7 +81,7 @@ export class DefenseClawInferenceClient {
   }
 
   /** Scan the completion after the model returns. */
-  async inspectResponse({ session, user, userSource, model, content }) {
+  async inspectResponse({ session, user, userSource, model, content, traceparent }) {
     if (!content) return null;
     try {
       const verdict = await this.#post("/api/v1/inspect/response", {
@@ -86,7 +90,7 @@ export class DefenseClawInferenceClient {
         session_id: session,
         user,
         user_source: userSource,
-      });
+      }, { traceparent });
       return this.#normalize(verdict);
     } catch (err) {
       return this.#unreachable(err);

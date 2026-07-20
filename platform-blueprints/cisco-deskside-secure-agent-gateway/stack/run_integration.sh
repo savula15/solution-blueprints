@@ -115,26 +115,50 @@ export DC_PORT
 # connector use the same one — DefenseClaw >=0.8 fails closed without it.
 export DEFENSECLAW_GATEWAY_TOKEN="${DEFENSECLAW_GATEWAY_TOKEN:-cs-itest-$$}"
 DC_OUT="$ART/gateway_boot.txt"
-: > "$DC_OUT"
-bash "$HERE/defenseclaw/run_gateway.sh" >"$DC_OUT" 2>&1 &
-PIDS+=("$!")
 DC_UP=0
-for _ in $(seq 1 150); do
-  if curl -sf "http://127.0.0.1:$DC_PORT/health" >/dev/null 2>&1; then DC_UP=1; break; fi
-  sleep 0.4
-done
-if [ "$DC_UP" -eq 1 ]; then
-  export DEFENSECLAW_HOME="$(grep -oE 'DEFENSECLAW_HOME=.*' "$DC_OUT" | tail -1 | cut -d= -f2-)"
+# Bound for the cleanup trap and the Stage 3 gateway.log check; overwritten by
+# the bundled path below when it learns the gateway's home from the boot output.
+export DEFENSECLAW_HOME="${DEFENSECLAW_HOME:-}"
+# DefenseClaw plane selection:
+#   DEFENSECLAW_SKIP=1     disable governance (no gateway; connector/proxy fail-open)
+#   DEFENSECLAW_EXTERNAL=1 use a gateway already running outside the blueprint:
+#                          don't start one, just health-check it and consult it
+#                          fail-closed. The caller must export the gateway's own
+#                          DEFENSECLAW_GATEWAY_TOKEN (and DC_PORT if not 18970).
+#   default               start the bundled gateway via run_gateway.sh
+if [ "${DEFENSECLAW_SKIP:-0}" = "1" ]; then
+  log "SKIP: DefenseClaw disabled (DEFENSECLAW_SKIP=1); connector/proxy run fail-open"
+elif [ "${DEFENSECLAW_EXTERNAL:-0}" = "1" ]; then
+  log "using external DefenseClaw gateway at http://127.0.0.1:$DC_PORT (DEFENSECLAW_EXTERNAL=1)"
+  for _ in $(seq 1 25); do
+    if curl -sf "http://127.0.0.1:$DC_PORT/health" >/dev/null 2>&1; then DC_UP=1; break; fi
+    sleep 0.2
+  done
+  check "external DefenseClaw gateway healthy on :$DC_PORT" "[ ${DC_UP:-0} -eq 1 ]"
 else
-  log "WARN: DefenseClaw gateway failed to start; see $DC_OUT"
+  : > "$DC_OUT"
+  bash "$HERE/defenseclaw/run_gateway.sh" >"$DC_OUT" 2>&1 &
+  PIDS+=("$!")
+  for _ in $(seq 1 150); do
+    if curl -sf "http://127.0.0.1:$DC_PORT/health" >/dev/null 2>&1; then DC_UP=1; break; fi
+    sleep 0.4
+  done
+  if [ "$DC_UP" -eq 1 ]; then
+    export DEFENSECLAW_HOME="$(grep -oE 'DEFENSECLAW_HOME=.*' "$DC_OUT" | tail -1 | cut -d= -f2-)"
+  else
+    log "WARN: DefenseClaw gateway failed to start; see $DC_OUT"
+  fi
+  check "DefenseClaw gateway healthy on :$DC_PORT" "[ ${DC_UP:-0} -eq 1 ]"
 fi
-check "DefenseClaw gateway healthy on :$DC_PORT" "[ ${DC_UP:-0} -eq 1 ]"
 
 # Connector env shared by the probes below.
 export AXIS_BIN AXIS_POLICY
 export DEFENSECLAW_URL="http://127.0.0.1:$DC_PORT"
 export DEFENSECLAW_MODE="action"
-export DEFENSECLAW_FAIL_OPEN="0"
+# Fail-closed by default (an unreachable gateway blocks the call). When
+# DefenseClaw is skipped the gateway is absent on purpose, so fail-open instead
+# so tool calls and inference still run.
+if [ "${DEFENSECLAW_SKIP:-0}" = "1" ]; then export DEFENSECLAW_FAIL_OPEN="1"; else export DEFENSECLAW_FAIL_OPEN="0"; fi
 export DEFENSECLAW_GATEWAY_TOKEN  # connector authenticates with the gateway
 export SPLUNK_SINK="$SINK"
 export SPLUNK_HEC_URL="$HEC_URL_EFF"
@@ -208,11 +232,14 @@ fi
 if [ "${LEMON_UP:-0}" -eq 1 ]; then
   log "=== Stage 5: unified session (proxy + connector share AXIS_SESSION) ==="
   SESS="cc-itest-unified-$$"
+  STATE="${TMPDIR:-/tmp}/axis-trace-$SESS.json"
   PROXY_PORT="${PROXY_PORT:-13399}"
   : > "$SINK"
   # LEMON_ROUTER stays off (plain passthrough) so no router binary is needed.
   # LLM_SESSION is NOT exported: the proxy must fall back to AXIS_SESSION.
+  # AXIS_TRACE_STATE is pinned so the Stage 6 connector can share the same per-turn trace.
   AXIS_SESSION="$SESS" \
+  AXIS_TRACE_STATE="$STATE" \
   LEMON_PROXY_PORT="$PROXY_PORT" \
   LEMON_UPSTREAM="http://127.0.0.1:$LEMONADE_PORT" \
   DEFENSECLAW_URL="http://127.0.0.1:$DC_PORT" \
@@ -288,11 +315,21 @@ if [ "${RUN_CC:-1}" -eq 1 ] && [ "${LEMON_UP:-0}" -eq 1 ] && command -v claude >
 { "mcpServers": { "axis": { "command": "node", "args": ["$SERVER"],
   "env": { "AXIS_BIN": "$AXIS_BIN", "AXIS_POLICY": "$AXIS_POLICY",
     "DEFENSECLAW_URL": "http://127.0.0.1:$DC_PORT", "DEFENSECLAW_MODE": "action",
+    "DEFENSECLAW_FAIL_OPEN": "$DEFENSECLAW_FAIL_OPEN",
     "DEFENSECLAW_GATEWAY_TOKEN": "$DEFENSECLAW_GATEWAY_TOKEN",
     "SPLUNK_SINK": "$SINK", "SPLUNK_HEC_URL": "$HEC_URL_EFF",
-    "SPLUNK_HEC_TOKEN": "$HEC_TOKEN_EFF" } } } }
+    "SPLUNK_HEC_TOKEN": "$HEC_TOKEN_EFF",
+    "AXIS_SESSION": "${SESS:-}", "AXIS_TRACE_STATE": "${STATE:-}",
+    "OTEL_EXPORTER_OTLP_ENDPOINT": "${OTEL_EXPORTER_OTLP_ENDPOINT:-}",
+    "AXIS_TRACE_PROPAGATION": "${AXIS_TRACE_PROPAGATION:-off}",
+    "LLM_CAPTURE_CONTENT": "${LLM_CAPTURE_CONTENT:-off}",
+    "LLM_CAPTURE_MAX_CHARS": "${LLM_CAPTURE_MAX_CHARS:-8192}" } } } }
 EOF
-  ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-http://127.0.0.1:$LEMONADE_PORT}" \
+  # Route Claude through the proxy when it is up (inference is audited + mints the
+  # per-turn trace the connector joins); fall back to Lemonade directly otherwise.
+  CC_BASE="http://127.0.0.1:$LEMONADE_PORT"
+  [ "${PROXY_UP:-0}" -eq 1 ] && CC_BASE="http://127.0.0.1:$PROXY_PORT"
+  ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-$CC_BASE}" \
   ANTHROPIC_AUTH_TOKEN="lemonade-local" \
   ANTHROPIC_DEFAULT_OPUS_MODEL="$LEMON_MODEL" \
   ANTHROPIC_DEFAULT_SONNET_MODEL="$LEMON_MODEL" \

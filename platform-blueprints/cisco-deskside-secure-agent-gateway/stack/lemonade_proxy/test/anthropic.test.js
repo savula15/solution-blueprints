@@ -5,7 +5,28 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { extractRequest, extractResponseJson, parseAnthropicSSE } from "../src/anthropic.js";
+import { extractRequest, extractResponseJson, parseAnthropicSSE, userTurnText } from "../src/anthropic.js";
+
+test("userTurnText strips Claude Code harness wrappers to the human text", () => {
+  const wrapped =
+    "<system-reminder>\nToday's date is 2026-07-20.\n</system-reminder>\n\n" +
+    "<local-command-caveat>Caveat: ...</local-command-caveat>\n" +
+    "<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args></command-args>\n" +
+    "<local-command-stdout>Set model to Qwen3-8B-GGUF (default)</local-command-stdout>\n\n" +
+    "what is 3+7?";
+  assert.equal(userTurnText(wrapped), "what is 3+7?");
+});
+
+test("extractRequest returns the stripped user turn as lastUserText", () => {
+  const body = {
+    system: "You are Claude Code. " + "x".repeat(500),
+    messages: [{ role: "user", content: "<system-reminder>ctx</system-reminder>\n\nwhat is 3+7?" }],
+  };
+  const out = extractRequest(body);
+  assert.equal(out.lastUserText, "what is 3+7?");
+  // the full prompt (for char counts) still includes the system harness
+  assert.ok(out.promptText.length > out.lastUserText.length);
+});
 
 test("extractRequest reads model/stream/messages and flattens prompt text", () => {
   const info = extractRequest({

@@ -15,6 +15,21 @@ CSI="$(dirname "$(dirname "$HALO_DIR")")"   # .../stack (halo lives under platfo
 source "$HALO_DIR/env.sh"
 export RUN_CC="${RUN_CC:-0}"
 
+# Optional direct-OTLP path: when a Galileo endpoint is configured, start the deskside
+# OTel collector and point the producers at it. Additive -- HEC stays the audit sink and
+# a stock run (no GALILEO_OTLP_ENDPOINT) is unchanged.
+mkdir -p "$CSI/artifacts"
+if [ -n "${GALILEO_OTLP_ENDPOINT:-}" ]; then
+  export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://127.0.0.1:4318}"
+  export AXIS_TRACE_PROPAGATION="${AXIS_TRACE_PROPAGATION:-on}"
+  COLL_PIDFILE="${OTELCOL_PIDFILE:-${TMPDIR:-/tmp}/glassbox-otelcol.pid}"
+  # run-collector.sh is idempotent (reuses a collector already up); the pidfile is the
+  # canonical handle, so stop whatever it manages on exit -- new start or a prior orphan.
+  bash "$CSI/otel-collector/run-collector.sh" >"$CSI/artifacts/collector.log" 2>&1 &
+  trap 'p="$(cat "$COLL_PIDFILE" 2>/dev/null)"; [ -n "$p" ] && kill "$p" 2>/dev/null; rm -f "$COLL_PIDFILE"; true' EXIT
+  echo "== OTel collector -> $GALILEO_OTLP_ENDPOINT (idempotent; log: artifacts/collector.log) =="
+fi
+
 # preflight: warn if our ports are already taken (shared-box etiquette)
 busy=""
 for p in "$DC_PORT" "$HEC_PORT" "$PROXY_PORT"; do

@@ -68,6 +68,15 @@ test("anthropicToOpenAI: stream sets stream + include_usage", () => {
   assert.deepEqual(oai.stream_options, { include_usage: true });
 });
 
+test("anthropicToOpenAI: disableThinking injects chat_template_kwargs.enable_thinking=false", () => {
+  const body = { messages: [{ role: "user", content: "hi" }] };
+  assert.equal(anthropicToOpenAI(body, "m").chat_template_kwargs, undefined);
+  assert.deepEqual(
+    anthropicToOpenAI(body, "m", { disableThinking: true }).chat_template_kwargs,
+    { enable_thinking: false },
+  );
+});
+
 test("openAIToAnthropic: text completion -> Anthropic message", () => {
   const a = openAIToAnthropic(
     { id: "o1", model: "q", choices: [{ finish_reason: "stop", message: { content: "hello" } }], usage: { prompt_tokens: 4, completion_tokens: 2 } },

@@ -28,7 +28,7 @@ const SOURCETYPE = "axis:toolcall";
 const INDEX = "axis";
 
 export class SplunkEventSink {
-  constructor({ sinkPath, hecUrl, hecToken, fetchImpl, reachableTimeoutMs } = {}) {
+  constructor({ sinkPath, hecUrl, hecToken, fetchImpl, reachableTimeoutMs, otlp } = {}) {
     this.sinkPath = sinkPath || null;
     this.hecUrl = hecUrl ? hecUrl.replace(/\/+$/, "") : null;
     this.hecToken = hecToken || "fake-token";
@@ -37,6 +37,9 @@ export class SplunkEventSink {
     // fail-closed gate refuse quickly instead of hanging on a TCP timeout.
     this.reachableTimeoutMs =
       reachableTimeoutMs ?? (Number(process.env.AUDIT_REACHABLE_TIMEOUT_MS) || 1500);
+    // Optional additive OTLP span export to a local collector (see otlp.js). HEC
+    // stays the audit source of truth; this is a second consumer of the record.
+    this.otlp = otlp || null;
   }
 
   /** Append one event to the JSONL sink and optionally POST it to a HEC. The
@@ -48,6 +51,9 @@ export class SplunkEventSink {
     }
     if (this.hecUrl) {
       await this.#postHec(event).catch(() => {});
+    }
+    if (this.otlp) {
+      await this.otlp.export(event).catch(() => {});
     }
     return event;
   }
@@ -150,10 +156,21 @@ export function buildToolCall({
   result,
   defenseclaw,
   trace,
+  capture = false,
+  maxChars = 8192,
 }) {
   // Each tool call is its own span, parented to the turn's root span so a
   // consumer can nest "tool call under the user turn".
   const spanId = newSpanId();
+  // Opt-in tool-output capture (LLM_CAPTURE_CONTENT): the command is already carried
+  // in command.argv_redacted; when capture is on we also carry the tool's stdout/stderr
+  // (truncated) so the execute_tool span can show output text. Off by default, so a
+  // plain build keeps shipping metadata only.
+  const cap = Number.isFinite(maxChars) && maxChars > 0 ? maxChars : 8192;
+  const outputText =
+    capture && result
+      ? `${result.stdout ?? ""}${result.stderr ? "\n" + result.stderr : ""}`.slice(0, cap)
+      : "";
   return {
     event: "axis.toolcall",
     time: nowEpoch(),
@@ -191,5 +208,6 @@ export function buildToolCall({
           reachable: defenseclaw.reachable,
         }
       : null,
+    content: outputText ? { output: outputText } : null,
   };
 }

@@ -44,11 +44,14 @@ const SOURCETYPE = "axis:llm";
 const INDEX = "axis";
 
 export class LlmEventSink {
-  constructor({ sinkPath, hecUrl, hecToken, fetchImpl } = {}) {
+  constructor({ sinkPath, hecUrl, hecToken, fetchImpl, otlp } = {}) {
     this.sinkPath = sinkPath || null;
     this.hecUrl = hecUrl ? hecUrl.replace(/\/+$/, "") : null;
     this.hecToken = hecToken || "fake-token";
     this.fetch = fetchImpl || globalThis.fetch;
+    // Optional additive OTLP span export to a local collector (see otlp.js). HEC
+    // stays the audit source of truth; this is a second consumer of the record.
+    this.otlp = otlp || null;
   }
 
   async emit(event) {
@@ -57,6 +60,9 @@ export class LlmEventSink {
     }
     if (this.hecUrl) {
       await this.#postHec(event).catch(() => {});
+    }
+    if (this.otlp) {
+      await this.otlp.export(event).catch(() => {});
     }
     return event;
   }

@@ -25,6 +25,23 @@ function contentToText(content) {
   return "";
 }
 
+/** Claude Code wraps the human turn with harness scaffolding: <system-reminder>
+ *  context, slash-command echoes (<command-name>/<command-message>/<command-args>),
+ *  and <local-command-*> output, with the actual question trailing. Strip those so
+ *  the captured input reads as the user's text. Best-effort — an unrecognized
+ *  wrapper passes through rather than dropping the turn. */
+export function userTurnText(text) {
+  if (typeof text !== "string") return "";
+  return text
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "")
+    .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/gi, "")
+    .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/gi, "")
+    .replace(/<command-(name|message|args|contents)>[\s\S]*?<\/command-\1>/gi, "")
+    .replace(/<\/?(?:command-(?:name|message|args|contents)|local-command-[a-z-]+|system-reminder)>/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 /** Pull model/stream/message-count/prompt text out of a Messages request body.
  *  `promptText` is the whole flattened prompt (for telemetry char counts).
  *  `lastUserText` is just the final user turn's text — the task the agent is
@@ -51,7 +68,10 @@ export function extractRequest(body) {
     }
   }
   out.promptText = parts.filter(Boolean).join("\n");
-  if (!out.lastUserText) out.lastUserText = out.promptText;
+  // Strip Claude Code's harness scaffolding from the user turn so captured input is
+  // the human's text; keep the raw turn if stripping leaves nothing.
+  if (out.lastUserText) out.lastUserText = userTurnText(out.lastUserText) || out.lastUserText;
+  else out.lastUserText = out.promptText;
   return out;
 }
 

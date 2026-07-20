@@ -37,6 +37,7 @@ import {
   buildLlmRequest,
   contentBlock,
 } from "./llm_events.js";
+import { otlpFromEnv } from "./otlp.js";
 import { extractRequest, extractResponseJson, parseAnthropicSSE, isNewUserTurn } from "./anthropic.js";
 import { anthropicToOpenAI, openAIToAnthropic, openAISSEtoAnthropic } from "./translate.js";
 
@@ -49,6 +50,8 @@ const cfg = {
   defenseclawMode: process.env.DEFENSECLAW_INFERENCE_MODE || "observe",
   defenseclawFailOpen: process.env.DEFENSECLAW_INFERENCE_FAIL_OPEN === "0" ? false : true,
   inspectResponse: process.env.DEFENSECLAW_INSPECT_RESPONSE !== "0",
+  // Forward the turn's W3C traceparent on the DefenseClaw consult (opt-in).
+  tracePropagation: process.env.AXIS_TRACE_PROPAGATION === "on",
   splunkSink: process.env.SPLUNK_SINK || null,
   splunkHecUrl: process.env.SPLUNK_HEC_URL || null,
   splunkHecToken: process.env.SPLUNK_HEC_TOKEN || "fake-token",
@@ -85,6 +88,10 @@ const cfg = {
   translateLocal: process.env.LEMON_TRANSLATE_LOCAL === "1",
   lemonadeOpenAIPath: process.env.LEMONADE_OPENAI_PATH || "/api/v1/chat/completions",
   localModel: process.env.LEMON_MODEL || "Qwen3-Coder-30B-A3B-Instruct-GGUF",
+  // Qwen3-family local models default to "thinking" (answer goes to
+  // reasoning_content, content empty). Disable it on the translated local path so
+  // the client gets a direct answer. Set LEMON_LOCAL_DISABLE_THINKING=0 to keep it.
+  localDisableThinking: process.env.LEMON_LOCAL_DISABLE_THINKING !== "0",
   // Frontier tier (configurable): default = AMD LLM Gateway (Anthropic-compatible,
   // like Lemonade). For Anthropic direct set FRONTIER_UPSTREAM=https://api.anthropic.com,
   // FRONTIER_AUTH_HEADER=x-api-key, FRONTIER_MODEL=claude-haiku-4-5-20251001.
@@ -127,11 +134,23 @@ const router = new SemanticRouterClient({
 // without it, a "frontier" decision still routes local (fail-safe) but is
 // recorded so the operator can see the missing credential.
 const frontierReady = Boolean(cfg.frontierAuthKey);
+// Additive, opt-in OTLP export to a local collector (off unless an OTLP endpoint
+// is configured). This plane is the trace authority, so its exporter emits the root.
+const otlp = otlpFromEnv(process.env, { emitRoot: true });
 const sink = new LlmEventSink({
   sinkPath: cfg.splunkSink,
   hecUrl: cfg.splunkHecUrl,
   hecToken: cfg.splunkHecToken,
+  otlp,
 });
+
+/** W3C traceparent for the current turn so DefenseClaw can correlate (and, on a
+ *  trusted loopback route, parent) its telemetry onto the same trace. Only sent
+ *  when AXIS_TRACE_PROPAGATION=on. */
+function traceparentFor(trace) {
+  if (!cfg.tracePropagation || !trace?.trace_id || !trace?.root_span_id) return null;
+  return `00-${trace.trace_id}-${trace.root_span_id}-01`;
+}
 
 const MESSAGE_PATHS = ["/v1/messages", "/v1/chat/completions"];
 const isMessageEndpoint = (url) => MESSAGE_PATHS.some((p) => url.split("?")[0].endsWith(p));
@@ -200,6 +219,7 @@ async function handle(req, res) {
     userSource: identity.userSource,
     model: reqInfo.model,
     content: reqInfo.promptText,
+    traceparent: traceparentFor(trace),
   });
 
   // In action mode a real block short-circuits upstream.
@@ -225,7 +245,10 @@ async function handle(req, res) {
           content: contentBlock({
             capture: cfg.captureContent,
             maxChars: cfg.captureMaxChars,
-            promptText: reqInfo.promptText,
+            // The user turn (the task), not the whole flattened prompt — the agent's
+            // ~35KB system prompt is noise as span/trace input. prompt_chars above
+            // still reflects the full prompt for tokenomics.
+            promptText: reqInfo.lastUserText,
           }),
         }),
       )
@@ -290,7 +313,9 @@ async function handle(req, res) {
     fwdHeaders["content-type"] = "application/json";
     if (reqBody) {
       try {
-        fwdBody = Buffer.from(JSON.stringify(anthropicToOpenAI(reqBody, cfg.localModel)));
+        fwdBody = Buffer.from(
+          JSON.stringify(anthropicToOpenAI(reqBody, cfg.localModel, { disableThinking: cfg.localDisableThinking })),
+        );
       } catch {
         /* fall back to the original body */
       }
@@ -337,7 +362,10 @@ async function handle(req, res) {
           content: contentBlock({
             capture: cfg.captureContent,
             maxChars: cfg.captureMaxChars,
-            promptText: reqInfo.promptText,
+            // The user turn (the task), not the whole flattened prompt — the agent's
+            // ~35KB system prompt is noise as span/trace input. prompt_chars above
+            // still reflects the full prompt for tokenomics.
+            promptText: reqInfo.lastUserText,
           }),
         }),
       )
@@ -402,6 +430,7 @@ async function handle(req, res) {
       userSource: identity.userSource,
       model: reqInfo.model,
       content: parsed.completionText,
+      traceparent: traceparentFor(trace),
     });
   }
 
@@ -439,7 +468,8 @@ async function handle(req, res) {
         content: contentBlock({
           capture: cfg.captureContent,
           maxChars: cfg.captureMaxChars,
-          promptText: reqInfo.promptText,
+          // The user turn, not the whole flattened prompt (see above).
+          promptText: reqInfo.lastUserText,
           completionText: parsed.completionText,
         }),
       }),

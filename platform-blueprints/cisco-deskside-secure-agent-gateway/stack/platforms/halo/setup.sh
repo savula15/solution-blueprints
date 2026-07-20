@@ -48,13 +48,19 @@ else say "Rust present"; fi
 cargo --version
 
 # --- DefenseClaw gateway (public) -----------------------------------------
-if [ ! -d "$HALO_TOOLS/repos/defenseclaw/.git" ]; then
-  say "cloning cisco-ai-defense/defenseclaw"
-  git clone https://github.com/cisco-ai-defense/defenseclaw.git "$HALO_TOOLS/repos/defenseclaw"
+# DEFENSECLAW_SKIP=1 skips cloning/building the governance gateway; run.sh must
+# then also run with DEFENSECLAW_SKIP=1 so the connector/proxy go fail-open.
+if [ "${DEFENSECLAW_SKIP:-0}" = "1" ]; then
+  say "SKIP: DefenseClaw gateway (DEFENSECLAW_SKIP=1)"
+else
+  if [ ! -d "$HALO_TOOLS/repos/defenseclaw/.git" ]; then
+    say "cloning cisco-ai-defense/defenseclaw"
+    git clone https://github.com/cisco-ai-defense/defenseclaw.git "$HALO_TOOLS/repos/defenseclaw"
+  fi
+  if [ ! -x "$HALO_TOOLS/repos/defenseclaw/defenseclaw-gateway" ]; then
+    say "building defenseclaw-gateway"; ( cd "$HALO_TOOLS/repos/defenseclaw" && make gateway )
+  else say "defenseclaw-gateway present"; fi
 fi
-if [ ! -x "$HALO_TOOLS/repos/defenseclaw/defenseclaw-gateway" ]; then
-  say "building defenseclaw-gateway"; ( cd "$HALO_TOOLS/repos/defenseclaw" && make gateway )
-else say "defenseclaw-gateway present"; fi
 
 # --- AXIS (public, build from source) -------------------------------------
 if [ ! -d "$HALO_TOOLS/repos/axis/.git" ]; then

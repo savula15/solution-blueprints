@@ -54,13 +54,17 @@ export class DefenseClawClient {
     return h;
   }
 
-  async #post(path, body) {
+  async #post(path, body, { traceparent } = {}) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
     try {
+      // Forward the turn's W3C trace context so DefenseClaw can correlate (and, on
+      // a trusted loopback route, parent) its telemetry onto the same trace.
+      const headers = this.#headers();
+      if (traceparent) headers["traceparent"] = traceparent;
       const res = await this.fetch(`${this.baseUrl}${path}`, {
         method: "POST",
-        headers: this.#headers(),
+        headers,
         body: JSON.stringify(body),
         signal: ctrl.signal,
       });
@@ -79,7 +83,7 @@ export class DefenseClawClient {
    *     reachable: bool, raw }
    *  `decision` already accounts for mode + fail-open: it is what the caller
    *  should act on (block ⇒ do not run AXIS). */
-  async admitToolCall({ session, user, userSource, tool = "run", argv, cwd }) {
+  async admitToolCall({ session, user, userSource, tool = "run", argv, cwd, traceparent }) {
     const args = { argv, cwd };
     try {
       const verdict = await this.#post("/api/v1/inspect/tool", {
@@ -93,7 +97,7 @@ export class DefenseClawClient {
         user,
         user_source: userSource,
         connector: this.connector,
-      });
+      }, { traceparent });
       return this.#normalize(verdict);
     } catch (err) {
       return this.#unreachable(err);
@@ -102,7 +106,7 @@ export class DefenseClawClient {
 
   /** Optionally inspect a tool result (observe lane). Failures are swallowed —
    *  result inspection never blocks a call that already ran. */
-  async inspectToolResult({ session, user, userSource, tool = "run", content }) {
+  async inspectToolResult({ session, user, userSource, tool = "run", content, traceparent }) {
     try {
       const verdict = await this.#post("/api/v1/inspect/tool", {
         tool,
@@ -112,7 +116,7 @@ export class DefenseClawClient {
         user,
         user_source: userSource,
         connector: this.connector,
-      });
+      }, { traceparent });
       return this.#normalize(verdict);
     } catch {
       return null;
