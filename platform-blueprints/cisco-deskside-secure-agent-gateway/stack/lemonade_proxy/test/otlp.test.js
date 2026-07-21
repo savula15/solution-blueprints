@@ -83,6 +83,7 @@ test("an llm.request maps to root + chat + two control spans on one trace", () =
   assert.equal(chat.traceId, trace.trace_id);
   assert.equal(chat.parentSpanId, trace.root_span_id);
   assert.equal(attr(chat, "gen_ai.usage.input_tokens"), 50);
+  assert.equal(attr(chat, "gen_ai.usage.total_tokens"), 70);
   assert.equal(attr(chat, "tokenomics.input_tokens"), 50);
   assert.equal(attr(chat, "gpu.energy_joules"), 12.5);
   assert.equal(attr(chat, "execution_location"), "deskside");
@@ -149,6 +150,50 @@ test("a blocked prompt is an error chat span with a deny control span", () => {
 test("session-lifecycle events produce no spans", () => {
   const exporter = new OtlpSpanExporter({ endpoint: "http://c/v1/traces" });
   assert.equal(exporter.requestFor(buildLlmSessionStart(identity)), null);
+});
+
+test("chat + root carry the configured agent name and per-dim user_metadata attributes", () => {
+  const exporter = new OtlpSpanExporter({
+    endpoint: "http://c/v1/traces",
+    agentName: "cc-deskside",
+    userMetadata: { "organization.team": "platform", cost_center: "CC-PLT-01" },
+  });
+  const spans = spansOf(exporter.requestFor(llmEvent()));
+  const root = spans.find((s) => s.name === "invoke_agent");
+  const chat = spans.find((s) => s.name.startsWith("chat"));
+  // otel_v2 lifts individual attributes into user_metadata, so each dim is its own
+  // attribute (no JSON bag). gen_ai.agent.name feeds AO's mapped agent field; agent.name
+  // is the visible copy.
+  for (const s of [root, chat]) {
+    assert.equal(attr(s, "gen_ai.agent.name"), "cc-deskside");
+    assert.equal(attr(s, "agent.name"), "cc-deskside");
+    assert.equal(attr(s, "organization.team"), "platform");
+    assert.equal(attr(s, "cost_center"), "CC-PLT-01");
+    assert.equal(attr(s, "enduser.id"), "u");
+    assert.equal(attr(s, "metadata"), undefined);
+  }
+});
+
+test("defaults: agent name deskside-coding-agent, enduser.id auto-added, no metadata blob", () => {
+  const chat = spansOf(new OtlpSpanExporter({ endpoint: "http://c/v1/traces" }).requestFor(llmEvent()))
+    .find((s) => s.name.startsWith("chat"));
+  assert.equal(attr(chat, "gen_ai.agent.name"), "deskside-coding-agent");
+  assert.equal(attr(chat, "agent.name"), "deskside-coding-agent");
+  assert.equal(attr(chat, "enduser.id"), "u");
+  assert.equal(attr(chat, "metadata"), undefined);
+});
+
+test("chat carries llm.time_to_first_token_ms as a user_metadata attribute when the result reports it", () => {
+  const exporter = new OtlpSpanExporter({ endpoint: "http://c/v1/traces" });
+  const spans = spansOf(
+    exporter.requestFor(
+      llmEvent({
+        result: { status: 200, durationMs: 1200, promptTokens: 50, completionTokens: 20, completionChars: 80, stopReason: "end_turn", timeToFirstTokenMs: 187 },
+      }),
+    ),
+  );
+  const chat = spans.find((s) => s.name.startsWith("chat"));
+  assert.equal(attr(chat, "llm.time_to_first_token_ms"), "187");
 });
 
 test("export posts OTLP/JSON to the collector and never throws on failure", async () => {

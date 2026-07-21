@@ -311,6 +311,7 @@ fi
 if [ "${RUN_CC:-1}" -eq 1 ] && [ "${LEMON_UP:-0}" -eq 1 ] && command -v claude >/dev/null 2>&1; then
   log "=== Stage 6: functional Claude Code (best-effort, 7B CPU is slow) ==="
   : > "$SINK"
+  AXIS_UM_ESC=$(printf '%s' "${AXIS_USER_METADATA:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')
   cat > "$ART/.mcp.json" <<EOF
 { "mcpServers": { "axis": { "command": "node", "args": ["$SERVER"],
   "env": { "AXIS_BIN": "$AXIS_BIN", "AXIS_POLICY": "$AXIS_POLICY",
@@ -323,7 +324,8 @@ if [ "${RUN_CC:-1}" -eq 1 ] && [ "${LEMON_UP:-0}" -eq 1 ] && command -v claude >
     "OTEL_EXPORTER_OTLP_ENDPOINT": "${OTEL_EXPORTER_OTLP_ENDPOINT:-}",
     "AXIS_TRACE_PROPAGATION": "${AXIS_TRACE_PROPAGATION:-off}",
     "LLM_CAPTURE_CONTENT": "${LLM_CAPTURE_CONTENT:-off}",
-    "LLM_CAPTURE_MAX_CHARS": "${LLM_CAPTURE_MAX_CHARS:-8192}" } } } }
+    "LLM_CAPTURE_MAX_CHARS": "${LLM_CAPTURE_MAX_CHARS:-8192}",
+    "AXIS_AGENT_NAME": "${AXIS_AGENT_NAME:-deskside-coding-agent}", "AXIS_USER_METADATA": "$AXIS_UM_ESC" } } } }
 EOF
   # Route Claude through the proxy when it is up (inference is audited + mints the
   # per-turn trace the connector joins); fall back to Lemonade directly otherwise.

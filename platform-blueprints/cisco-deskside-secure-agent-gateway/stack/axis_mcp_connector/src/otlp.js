@@ -89,7 +89,7 @@ function controlAction(action) {
 
 /** The spans for one axis.toolcall event: the execute_tool span and the derived
  *  DefenseClaw admission control span. */
-function toolSpans(event, { deriveControlSpans }) {
+function toolSpans(event, { deriveControlSpans, agentName, userMetadata }) {
   const traceId = event.trace_id;
   const rootId = event.parent_span_id; // the turn root written by the inference plane
   const toolId = event.span_id;
@@ -114,6 +114,15 @@ function toolSpans(event, { deriveControlSpans }) {
   const statusCode =
     (typeof exit === "number" && exit !== 0) || event.decision === "deny" ? STATUS_ERROR : STATUS_UNSET;
   const spans = [];
+  // Configurable agent name (AXIS_AGENT_NAME) + the operator metadata (AXIS_USER_METADATA)
+  // plus the auto-resolved enduser.id. AO's otel_v2 lifts individual span attributes into
+  // user_metadata, so each dim is emitted as its own attribute (spread below).
+  const agent = agentName || "deskside-coding-agent";
+  const meta = { ...(userMetadata || {}) };
+  if (event.identity?.user) meta["enduser.id"] = event.identity.user;
+  // gen_ai.agent.name is consumed into AO's mapped agent field; expose agent.name too so
+  // the agent identity also survives as a user_metadata facet.
+  meta["agent.name"] = agent;
 
   spans.push(
     span({
@@ -129,7 +138,9 @@ function toolSpans(event, { deriveControlSpans }) {
         "gen_ai.operation.name": "execute_tool",
         "gen_ai.tool.name": attrs["tool.name"] || "run",
         "gen_ai.tool.type": "function",
+        "gen_ai.agent.name": agent,
         "gen_ai.conversation.id": session,
+        ...meta,
         "axis.turn": attrs["axis.turn"] ?? null,
         "axis.decision": event.decision ?? null,
         "axis.exit": typeof exit === "number" ? exit : null,
@@ -184,10 +195,12 @@ function toolSpans(event, { deriveControlSpans }) {
 }
 
 export class OtlpSpanExporter {
-  constructor({ endpoint, fetchImpl, deriveControlSpans = true } = {}) {
+  constructor({ endpoint, fetchImpl, deriveControlSpans = true, agentName, userMetadata } = {}) {
     this.endpoint = endpoint || null;
     this.fetch = fetchImpl || globalThis.fetch;
     this.deriveControlSpans = deriveControlSpans;
+    this.agentName = agentName;
+    this.userMetadata = userMetadata || {};
   }
 
   get enabled() {
@@ -198,7 +211,11 @@ export class OtlpSpanExporter {
    *  spans (session-lifecycle events). */
   requestFor(event) {
     if (!event || event.event !== "axis.toolcall") return null;
-    const spans = toolSpans(event, { deriveControlSpans: this.deriveControlSpans });
+    const spans = toolSpans(event, {
+      deriveControlSpans: this.deriveControlSpans,
+      agentName: this.agentName,
+      userMetadata: this.userMetadata,
+    });
     if (!spans.length) return null;
     return {
       resourceSpans: [
@@ -233,9 +250,19 @@ export class OtlpSpanExporter {
 export function otlpFromEnv(env = process.env, { fetchImpl } = {}) {
   const endpoint = otlpTracesEndpoint(env);
   if (!endpoint) return null;
+  // AXIS_USER_METADATA: operator-set JSON bag (team/department/cost_center/...);
+  // AXIS_AGENT_NAME: the agent name for every span this box emits.
+  let userMetadata = {};
+  try {
+    userMetadata = env.AXIS_USER_METADATA ? JSON.parse(env.AXIS_USER_METADATA) : {};
+  } catch {
+    userMetadata = {};
+  }
   return new OtlpSpanExporter({
     endpoint,
     fetchImpl,
     deriveControlSpans: env.AXIS_OTLP_CONTROL_SPANS !== "off",
+    agentName: (env.AXIS_AGENT_NAME || "").trim() || "deskside-coding-agent",
+    userMetadata,
   });
 }

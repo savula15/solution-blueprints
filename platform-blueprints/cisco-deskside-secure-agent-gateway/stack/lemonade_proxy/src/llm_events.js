@@ -243,6 +243,7 @@ export function buildLlmRequest({
           completion_tokens: result.completionTokens ?? null,
           completion_chars: result.completionChars ?? null,
           stop_reason: result.stopReason ?? null,
+          time_to_first_token_ms: result.timeToFirstTokenMs ?? null,
         }
       : {
           status: null,
@@ -251,6 +252,7 @@ export function buildLlmRequest({
           completion_tokens: null,
           completion_chars: null,
           stop_reason: null,
+          time_to_first_token_ms: null,
         },
     defenseclaw_request: dcBlock(defenseclawRequest),
     defenseclaw_response: dcBlock(defenseclawResponse),

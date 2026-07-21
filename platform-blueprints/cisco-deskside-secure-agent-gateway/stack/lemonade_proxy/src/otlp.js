@@ -94,7 +94,7 @@ function controlAction(action) {
 
 /** The spans for one llm.request event: the root (once per trace), the chat span,
  *  and the derived DefenseClaw control spans. */
-function llmSpans(event, rootState, { deriveControlSpans, emitRoot }) {
+function llmSpans(event, rootState, { deriveControlSpans, emitRoot, agentName, userMetadata }) {
   const traceId = event.trace_id;
   const rootId = event.parent_span_id; // the turn root span id
   const chatId = event.span_id;
@@ -113,6 +113,21 @@ function llmSpans(event, rootState, { deriveControlSpans, emitRoot }) {
   const durationMs = Number(result.duration_ms) || 0;
   const startNano = toNano((Number(event.time) || 0) - durationMs / 1000);
   const spans = [];
+  // Agent name is configurable per box (AXIS_AGENT_NAME). The metadata bag is the
+  // Operator-set AXIS_USER_METADATA plus the auto-resolved enduser.id and (when the
+  // local upstream reports it) TTFT. AO's otel_v2 lifts individual span attributes into
+  // user_metadata, so each dim is emitted as its own attribute (spread below), not
+  // bundled into one JSON blob.
+  const agent = agentName || "deskside-coding-agent";
+  const meta = { ...(userMetadata || {}) };
+  if (event.identity?.user) meta["enduser.id"] = event.identity.user;
+  // Plain llm.* key (not gen_ai.*) so otel_v2 lifts it into user_metadata as a facet
+  // tokenomics can read, rather than mapping it to a first-class gen_ai field.
+  if (result.time_to_first_token_ms != null)
+    meta["llm.time_to_first_token_ms"] = String(result.time_to_first_token_ms);
+  // gen_ai.agent.name is consumed into AO's mapped agent field; expose agent.name too so
+  // the agent identity also survives as a user_metadata facet.
+  meta["agent.name"] = agent;
 
   // Root: emitted (and re-emitted) per event by the authority plane. Trace input is
   // the turn's first prompt; trace output tracks the latest completion. AO upserts by
@@ -131,8 +146,9 @@ function llmSpans(event, rootState, { deriveControlSpans, emitRoot }) {
         endNano,
         attributes: {
           "gen_ai.operation.name": "invoke_agent",
-          "gen_ai.agent.name": "deskside-coding-agent",
+          "gen_ai.agent.name": agent,
           "gen_ai.conversation.id": session,
+          ...meta,
           "axis.turn": attrs["axis.turn"] ?? null,
           "gen_ai.input.messages": rs.input
             ? JSON.stringify([{ role: "user", content: rs.input }])
@@ -162,7 +178,8 @@ function llmSpans(event, rootState, { deriveControlSpans, emitRoot }) {
       attributes: {
         ...attrs,
         "gen_ai.conversation.id": session,
-        "gen_ai.agent.name": "deskside-coding-agent",
+        "gen_ai.agent.name": agent,
+        ...meta,
         "gpu.energy_joules": gpu.energy_joules ?? null,
         "gpu.power_avg_w": gpu.power_avg_w ?? null,
         "tokenomics.input_tokens": attrs["gen_ai.usage.input_tokens"] ?? null,
@@ -229,11 +246,13 @@ function llmSpans(event, rootState, { deriveControlSpans, emitRoot }) {
 }
 
 export class OtlpSpanExporter {
-  constructor({ endpoint, fetchImpl, deriveControlSpans = true, emitRoot = true } = {}) {
+  constructor({ endpoint, fetchImpl, deriveControlSpans = true, emitRoot = true, agentName, userMetadata } = {}) {
     this.endpoint = endpoint || null;
     this.fetch = fetchImpl || globalThis.fetch;
     this.deriveControlSpans = deriveControlSpans;
     this.emitRoot = emitRoot;
+    this.agentName = agentName;
+    this.userMetadata = userMetadata || {};
     this.rootState = new Map();
   }
 
@@ -248,6 +267,8 @@ export class OtlpSpanExporter {
     const spans = llmSpans(event, this.rootState, {
       deriveControlSpans: this.deriveControlSpans,
       emitRoot: this.emitRoot,
+      agentName: this.agentName,
+      userMetadata: this.userMetadata,
     });
     if (!spans.length) return null;
     return {
@@ -285,10 +306,20 @@ export class OtlpSpanExporter {
 export function otlpFromEnv(env = process.env, { emitRoot = true, fetchImpl } = {}) {
   const endpoint = otlpTracesEndpoint(env);
   if (!endpoint) return null;
+  // AXIS_USER_METADATA is an operator-set JSON bag (team/department/cost_center/...);
+  // AXIS_AGENT_NAME names the agent for every span this box emits.
+  let userMetadata = {};
+  try {
+    userMetadata = env.AXIS_USER_METADATA ? JSON.parse(env.AXIS_USER_METADATA) : {};
+  } catch {
+    userMetadata = {};
+  }
   return new OtlpSpanExporter({
     endpoint,
     fetchImpl,
     emitRoot,
     deriveControlSpans: env.AXIS_OTLP_CONTROL_SPANS !== "off",
+    agentName: (env.AXIS_AGENT_NAME || "").trim() || "deskside-coding-agent",
+    userMetadata,
   });
 }

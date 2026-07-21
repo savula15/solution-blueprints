@@ -75,6 +75,12 @@ fi
 # otherwise the client gets an empty completion.
 export LEMON_TRANSLATE_LOCAL="${LEMON_TRANSLATE_LOCAL:-1}"
 export LLM_CAPTURE_CONTENT="${LLM_CAPTURE_CONTENT:-on}"
+# Agent identity + operator metadata for AO facets: every span this box emits carries
+# the agent name (AXIS_AGENT_NAME) and the AXIS_USER_METADATA dims (a JSON object of
+# team/department/cost_center/...) as individual attributes that otel_v2 lifts into
+# user_metadata; enduser.id is auto-added by the producers.
+export AXIS_AGENT_NAME="${AXIS_AGENT_NAME:-deskside-coding-agent}"
+export AXIS_USER_METADATA="${AXIS_USER_METADATA:-}"
 : > "$STATE" 2>/dev/null || true
 AXIS_SESSION="$SESS" AXIS_TRACE_STATE="$STATE" \
 LEMON_PROXY_PORT="$PROXY_PORT" LEMON_UPSTREAM="http://127.0.0.1:$LEMONADE_PORT" \
@@ -88,6 +94,8 @@ note "proxy healthy on :$PROXY_PORT"
 
 # 5. mcp.json — the AXIS tool server, sharing the same session/trace/token/sink so
 #    tool calls land on the proxy's trace and authenticate to the gateway.
+# JSON-escape the metadata bag so it embeds cleanly as an mcp.json env string.
+AXIS_UM_ESC=$(printf '%s' "$AXIS_USER_METADATA" | sed 's/\\/\\\\/g; s/"/\\"/g')
 cat > "$MCP_JSON" <<EOF
 { "mcpServers": { "axis": { "command": "node", "args": ["$CSI/axis_mcp_connector/src/server.js"],
   "env": { "AXIS_BIN": "$AXIS_BIN", "AXIS_POLICY": "$AXIS_POLICY",
@@ -97,7 +105,8 @@ cat > "$MCP_JSON" <<EOF
     "AXIS_SESSION": "$SESS", "AXIS_TRACE_STATE": "$STATE",
     "OTEL_EXPORTER_OTLP_ENDPOINT": "${OTEL_EXPORTER_OTLP_ENDPOINT:-}",
     "AXIS_TRACE_PROPAGATION": "${AXIS_TRACE_PROPAGATION:-off}",
-    "LLM_CAPTURE_CONTENT": "$LLM_CAPTURE_CONTENT", "LLM_CAPTURE_MAX_CHARS": "${LLM_CAPTURE_MAX_CHARS:-8192}" } } } }
+    "LLM_CAPTURE_CONTENT": "$LLM_CAPTURE_CONTENT", "LLM_CAPTURE_MAX_CHARS": "${LLM_CAPTURE_MAX_CHARS:-8192}",
+    "AXIS_AGENT_NAME": "$AXIS_AGENT_NAME", "AXIS_USER_METADATA": "$AXIS_UM_ESC" } } } }
 EOF
 
 DISALLOW="Bash,BashOutput,KillShell,Read,Write,Edit,MultiEdit,NotebookEdit,NotebookRead,Glob,Grep,WebFetch,WebSearch,Task"

@@ -143,6 +143,20 @@ test("session-lifecycle events produce no spans", () => {
   assert.equal(exporter.requestFor(buildSessionStart(identity)), null);
 });
 
+test("execute_tool carries the configured agent name + per-dim user_metadata attributes", () => {
+  const exporter = new OtlpSpanExporter({
+    endpoint: "http://c/v1/traces",
+    agentName: "cc-deskside",
+    userMetadata: { "organization.team": "payments" },
+  });
+  const tool = spansOf(exporter.requestFor(toolEvent())).find((s) => s.name.startsWith("execute_tool"));
+  assert.equal(attr(tool, "gen_ai.agent.name"), "cc-deskside");
+  assert.equal(attr(tool, "agent.name"), "cc-deskside");
+  assert.equal(attr(tool, "organization.team"), "payments");
+  assert.equal(attr(tool, "enduser.id"), "u");
+  assert.equal(attr(tool, "metadata"), undefined);
+});
+
 test("export posts OTLP/JSON and never throws on failure", async () => {
   let captured = null;
   const okFetch = async (url, opts) => {

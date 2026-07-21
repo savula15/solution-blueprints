@@ -65,6 +65,10 @@ export function genAiAttributes({
     "gen_ai.response.model": servedModel ?? null,
     "gen_ai.usage.input_tokens": inputTokens ?? null,
     "gen_ai.usage.output_tokens": outputTokens ?? null,
+    // Emit the total explicitly: AO's OTLP ingest maps num_total_tokens from this
+    // attribute and does not always derive it from input+output.
+    "gen_ai.usage.total_tokens":
+      inputTokens != null && outputTokens != null ? inputTokens + outputTokens : null,
     "gen_ai.response.finish_reasons": stopReason ? [stopReason] : null,
     "execution_location": executionLocation ?? null,
   };

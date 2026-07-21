@@ -383,17 +383,22 @@ async function handle(req, res) {
   const upstreamIsSSE = (upstream.headers.get("content-type") || "").includes("event-stream");
   let raw;
   let parsed = { completionText: "", promptTokens: null, completionTokens: null, stopReason: null };
+  // TTFT: for a streamed (SSE) upstream the first chunk arrives after prompt-eval + the
+  // first token, so its arrival time ≈ time-to-first-token. For a buffered response we
+  // fall back to llama.cpp's prompt-eval time (timings.prompt_ms). Null on frontier.
+  let ttftMs = null;
 
   if (translate && upstream.ok) {
-    // Collect the OpenAI response fully, translate it back to the Anthropic shape
-    // the client expects, then send the translated body. (Buffered by design —
-    // Lemonade is the latency bottleneck, not this step.)
-    const oaiRaw = await upstream.text().catch(() => "");
+    // Collect the OpenAI response (timing the first chunk), translate it back to the
+    // Anthropic shape the client expects, then send the translated body. (Buffered by
+    // design — Lemonade is the latency bottleneck, not this step.)
+    const { text: oaiRaw, ttftMs: firstByteMs } = await collectTimed(upstream, started);
     let clientBody;
     if (upstreamIsSSE) {
       clientBody = openAISSEtoAnthropic(oaiRaw, reqInfo.model);
       resHeaders["content-type"] = "text/event-stream";
       parsed = parseAnthropicSSE(clientBody);
+      ttftMs = firstByteMs; // first streamed byte ≈ time-to-first-token
     } else {
       let oai = {};
       try {
@@ -405,6 +410,7 @@ async function handle(req, res) {
       clientBody = JSON.stringify(anth);
       resHeaders["content-type"] = "application/json";
       parsed = extractResponseJson(anth);
+      if (typeof oai?.timings?.prompt_ms === "number") ttftMs = Math.round(oai.timings.prompt_ms);
     }
     res.writeHead(upstream.status, resHeaders);
     res.write(clientBody);
@@ -459,6 +465,7 @@ async function handle(req, res) {
           completionTokens: parsed.completionTokens,
           completionChars: parsed.completionText.length,
           stopReason: parsed.stopReason,
+          timeToFirstTokenMs: ttftMs,
         },
         routing: routed,
         defenseclawRequest: dcReq,
@@ -501,6 +508,32 @@ async function streamAndCollect(upstream, res) {
   }
   res.end();
   return Buffer.concat(chunks).toString("utf8");
+}
+
+/** Buffer the upstream body while timing the first chunk. For a streamed (SSE) response
+ *  the first chunk lands after prompt-eval + the first token, so `ttftMs` (its arrival
+ *  relative to request start) approximates time-to-first-token. Not written to the
+ *  client here — the translate path sends the translated body afterwards. */
+async function collectTimed(upstream, started) {
+  if (!upstream.body || typeof upstream.body.getReader !== "function") {
+    return { text: await upstream.text().catch(() => ""), ttftMs: null };
+  }
+  const reader = upstream.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let ttftMs = null;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (ttftMs === null) ttftMs = Date.now() - started;
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+  } catch {
+    /* best-effort: return what we collected */
+  }
+  return { text, ttftMs };
 }
 
 /** Transparent pass-through for non-audited paths (health, models, …). */

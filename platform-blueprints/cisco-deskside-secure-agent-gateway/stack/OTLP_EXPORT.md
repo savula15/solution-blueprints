@@ -85,6 +85,8 @@ only, no collector). `setup.sh` does not touch the collector; it is fetched on f
 | `AXIS_TRACE_PROPAGATION` | off | forward the turn's W3C `traceparent` on the DefenseClaw consult |
 | `LLM_CAPTURE_CONTENT` | off | capture prompt/completion (inference) and tool stdout/stderr (tool plane) into the event `content` block; the exporters map it to `gen_ai.input.messages`/`output.messages` so it renders as span + trace input/output in AO |
 | `LLM_CAPTURE_MAX_CHARS` | 8192 | truncate captured prompt/completion text to this length |
+| `AXIS_AGENT_NAME` | `deskside-coding-agent` | agent identity on every span this box emits, as `gen_ai.agent.name` (AO's mapped agent field) and `agent.name` (a `user_metadata` facet); set once per deployment (e.g. in `serve.sh`) |
+| `AXIS_USER_METADATA` | unset | JSON object (team/department/cost_center/…) whose keys are emitted as individual span attributes; AO's `otel_v2` lifts each into `user_metadata`. `enduser.id` is auto-added from the resolved user, and `llm.time_to_first_token_ms` from the local upstream (llama.cpp prompt-eval time) when reported |
 
 ## Trace sharing and DefenseClaw
 
