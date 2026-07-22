@@ -27,16 +27,25 @@ MCP_JSON="$ART/mcp.live.json"
 export LEMON_MODEL="${LEMON_MODEL:-Qwen3-8B-GGUF}"
 note(){ printf '\n[serve] %s\n' "$*"; }
 
-# `stop` kills the proxy/gateway/collector by port (cmdline-agnostic). Lemonade is
-# left running on purpose — it is the heavy model server.
-if [ "${1:-}" = "stop" ]; then
+# Kill the managed services (proxy/gateway/collector) by port; Lemonade (the heavy
+# model server) is left running on purpose.
+stop_managed(){
   for port in "$PROXY_PORT" "$DC_PORT" 4318 4317; do
     for pid in $(ss -ltnp 2>/dev/null | grep ":$port " | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u); do
       kill "$pid" 2>/dev/null && echo "[serve] stopped pid $pid on :$port"
     done
   done
-  exit 0
-fi
+}
+if [ "${1:-}" = "stop" ]; then stop_managed; exit 0; fi
+
+# Always begin from a clean slate. A proxy/gateway left on its port by a prior run keeps
+# serving OLD code — and the health checks below can't tell a stale listener from a fresh
+# one, so a fresh `node server.js` that fails to bind is masked and pulled changes
+# silently never take effect. Free the ports first so the CURRENT code binds.
+note(){ printf '\n[serve] %s\n' "$*"; }
+note "clean restart: stopping any managed services from a prior run"
+stop_managed
+sleep 1
 
 # 1. Lemonade (inference upstream) — reuse if already healthy, else start it.
 if curl -sf "http://127.0.0.1:$LEMONADE_PORT/api/v1/health" >/dev/null 2>&1; then

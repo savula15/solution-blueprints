@@ -20,6 +20,20 @@
 
 const BLOCK_SEVERITIES = new Set(["HIGH", "CRITICAL"]);
 
+/** Compact the verdict's detailed_findings for the derived control span: keep the
+ *  rule identity (id/title/severity/confidence/tags), drop `evidence` — it can
+ *  contain the matched secret/content and must not land on a span. */
+function normalizeRules(detailed) {
+  if (!Array.isArray(detailed)) return [];
+  return detailed.map((f) => ({
+    id: f.rule_id || null,
+    title: f.title || null,
+    severity: f.severity || null,
+    confidence: typeof f.confidence === "number" ? f.confidence : null,
+    tags: Array.isArray(f.tags) ? f.tags : [],
+  }));
+}
+
 export class DefenseClawInferenceClient {
   constructor({ baseUrl, token, mode, failOpen, timeoutMs, fetchImpl } = {}) {
     this.baseUrl = (baseUrl || "http://127.0.0.1:18970").replace(/\/+$/, "");
@@ -121,6 +135,12 @@ export class DefenseClawInferenceClient {
       wouldBlock,
       reason: verdict.reason || "",
       reachable: true,
+      // Enrichment for the derived control span: the verdict score, the
+      // pre-mode-downgrade action, the mode, and the matched rules.
+      confidence: typeof verdict.confidence === "number" ? verdict.confidence : null,
+      rawAction: verdict.raw_action || null,
+      mode: verdict.mode || null,
+      rules: normalizeRules(verdict.detailed_findings),
       raw: verdict,
     };
   }

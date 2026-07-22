@@ -206,6 +206,10 @@ export function buildToolCall({
           findings: defenseclaw.findings,
           would_block: defenseclaw.wouldBlock,
           reachable: defenseclaw.reachable,
+          confidence: defenseclaw.confidence ?? null,
+          raw_action: defenseclaw.rawAction ?? null,
+          mode: defenseclaw.mode ?? null,
+          rules: defenseclaw.rules ?? [],
         }
       : null,
     content: outputText ? { output: outputText } : null,

@@ -196,6 +196,39 @@ test("chat carries llm.time_to_first_token_ms as a user_metadata attribute when 
   assert.equal(attr(chat, "llm.time_to_first_token_ms"), "187");
 });
 
+test("derived control span carries verdict enrichment (score, rule id, stage, mode, raw_action, tags)", () => {
+  const exporter = new OtlpSpanExporter({ endpoint: "http://c/v1/traces", agentName: "cc-deskside" });
+  const event = llmEvent({
+    defenseclawRequest: {
+      decision: "allow", severity: "HIGH", findings: ["Anthropic API key"], wouldBlock: true, reachable: true,
+      confidence: 0.98, rawAction: "block", mode: "observe",
+      rules: [{ id: "SEC-ANTHROPIC", title: "Anthropic API key", severity: "CRITICAL", confidence: 0.98, tags: ["credential"] }],
+    },
+  });
+  const pre = spansOf(exporter.requestFor(event)).find((s) => s.name === "control:llm_call:pre");
+  assert.equal(attr(pre, "agent_control.confidence"), 0.98);
+  assert.equal(attr(pre, "agent_control.control_id"), "SEC-ANTHROPIC");
+  assert.equal(attr(pre, "agent_control.check_stage"), "pre");
+  assert.equal(attr(pre, "agent_control.applies_to"), "llm_call");
+  assert.equal(attr(pre, "agent_control.agent_name"), "cc-deskside");
+  assert.equal(attr(pre, "defenseclaw.raw_action"), "block");
+  assert.equal(attr(pre, "defenseclaw.mode"), "observe");
+  assert.equal(attr(pre, "defenseclaw.rule_ids"), "SEC-ANTHROPIC");
+  assert.equal(attr(pre, "defenseclaw.finding_titles"), "Anthropic API key");
+  assert.equal(attr(pre, "defenseclaw.tags"), "credential");
+});
+
+test("control span omits enrichment attrs when the verdict has none (clean observe)", () => {
+  const exporter = new OtlpSpanExporter({ endpoint: "http://c/v1/traces" });
+  const pre = spansOf(exporter.requestFor(llmEvent())).find((s) => s.name === "control:llm_call:pre");
+  assert.equal(attr(pre, "agent_control.confidence"), undefined);
+  assert.equal(attr(pre, "agent_control.control_id"), undefined);
+  assert.equal(attr(pre, "defenseclaw.rule_ids"), undefined);
+  // stage/applies_to/agent_name are always present
+  assert.equal(attr(pre, "agent_control.check_stage"), "pre");
+  assert.equal(attr(pre, "agent_control.applies_to"), "llm_call");
+});
+
 test("export posts OTLP/JSON to the collector and never throws on failure", async () => {
   let captured = null;
   const okFetch = async (url, opts) => {

@@ -96,6 +96,10 @@ function dcBlock(v) {
     findings: v.findings,
     would_block: v.wouldBlock,
     reachable: v.reachable,
+    confidence: v.confidence ?? null,
+    raw_action: v.rawAction ?? null,
+    mode: v.mode ?? null,
+    rules: v.rules ?? [],
   };
 }
 

@@ -164,6 +164,10 @@ function toolSpans(event, { deriveControlSpans, agentName, userMetadata }) {
   if (deriveControlSpans && verdict) {
     const at = (BigInt(startNano) + MS_TO_NS).toString();
     const action = controlAction(verdict.action);
+    const rules = Array.isArray(verdict.rules) ? verdict.rules : [];
+    const ruleIds = rules.map((r) => r.id).filter(Boolean);
+    const titles = rules.map((r) => r.title).filter(Boolean);
+    const tags = [...new Set(rules.flatMap((r) => (Array.isArray(r.tags) ? r.tags : [])))];
     spans.push(
       span({
         traceId,
@@ -181,11 +185,21 @@ function toolSpans(event, { deriveControlSpans, agentName, userMetadata }) {
           "agent_control.control_name": "defenseclaw:tool-admission",
           "agent_control.evaluator_name": "DefenseClaw",
           "agent_control.stage": "pre",
+          "agent_control.check_stage": "pre",
+          "agent_control.applies_to": "tool_call",
+          "agent_control.agent_name": agent,
+          "agent_control.confidence": typeof verdict.confidence === "number" ? verdict.confidence : null,
+          "agent_control.control_id": ruleIds[0] ?? null,
           "agent_control.matched": Boolean(verdict.would_block) || action !== "observe",
           "agent_control.metadata.target_span_id": toolId,
           "axis.decision": event.decision ?? null,
           "defenseclaw.action": verdict.action ?? null,
           "defenseclaw.severity": verdict.severity ?? null,
+          "defenseclaw.raw_action": verdict.raw_action ?? null,
+          "defenseclaw.mode": verdict.mode ?? null,
+          "defenseclaw.rule_ids": ruleIds.length ? ruleIds.join(",") : null,
+          "defenseclaw.finding_titles": titles.length ? titles.join("; ") : null,
+          "defenseclaw.tags": tags.length ? tags.join(",") : null,
         },
       }),
     );

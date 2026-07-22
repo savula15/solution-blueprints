@@ -157,6 +157,26 @@ test("execute_tool carries the configured agent name + per-dim user_metadata att
   assert.equal(attr(tool, "metadata"), undefined);
 });
 
+test("tool control span carries verdict enrichment (score, rule id, applies_to, mode, raw_action)", () => {
+  const exporter = new OtlpSpanExporter({ endpoint: "http://c/v1/traces", agentName: "cc-deskside" });
+  const event = toolEvent({
+    defenseclaw: {
+      decision: "allow", severity: "HIGH", findings: ["reverse shell"], wouldBlock: true, reachable: true,
+      confidence: 0.9, rawAction: "block", mode: "observe",
+      rules: [{ id: "CMD-REVSHELL-DEVTCP", title: "reverse shell via /dev/tcp", severity: "HIGH", confidence: 0.9, tags: ["exec"] }],
+    },
+  });
+  const ctl = spansOf(exporter.requestFor(event)).find((s) => s.name === "control:tool_call:pre");
+  assert.equal(attr(ctl, "agent_control.confidence"), 0.9);
+  assert.equal(attr(ctl, "agent_control.control_id"), "CMD-REVSHELL-DEVTCP");
+  assert.equal(attr(ctl, "agent_control.applies_to"), "tool_call");
+  assert.equal(attr(ctl, "agent_control.check_stage"), "pre");
+  assert.equal(attr(ctl, "agent_control.agent_name"), "cc-deskside");
+  assert.equal(attr(ctl, "defenseclaw.raw_action"), "block");
+  assert.equal(attr(ctl, "defenseclaw.mode"), "observe");
+  assert.equal(attr(ctl, "defenseclaw.rule_ids"), "CMD-REVSHELL-DEVTCP");
+});
+
 test("export posts OTLP/JSON and never throws on failure", async () => {
   let captured = null;
   const okFetch = async (url, opts) => {

@@ -27,7 +27,12 @@ invoke_agent                 (inference plane, the trace authority, emits the ro
 A sandbox refusal (`decision=deny`) is a failed `execute_tool` span (`axis.decision`,
 non-zero `axis.exit`), not a control span. Control spans use
 `galileo.span.kind=control` + `agent_control.*` so Splunk AO classifies them as
-governance.
+governance. Each control span is enriched from the DefenseClaw verdict:
+`agent_control.confidence` (score), `agent_control.control_id` plus
+`defenseclaw.rule_ids`/`finding_titles`/`tags` (which rule fired),
+`agent_control.check_stage`/`applies_to`/`agent_control.agent_name`, and
+`defenseclaw.raw_action`/`mode` (the would-block decision in observe mode). Rule
+`evidence` is deliberately not emitted — it can contain the matched secret.
 
 **Input/output text.** The `execute_tool` span always carries the run command as input
 (`gen_ai.input.messages`, from the redacted argv). When `LLM_CAPTURE_CONTENT=on`, the
@@ -95,7 +100,17 @@ The producers already share one `trace_id` per turn across both planes via
 `traceparent` on the DefenseClaw consult, so DefenseClaw can correlate its telemetry
 by `trace_id`.
 
-For DefenseClaw to emit its own control spans as true children of this trace it must
-span-parent the inbound `traceparent` on its `/inspect` and `/guardrail` routes
-(today it does so only on its hook/notify routes). Until that lands, keep
-`AXIS_OTLP_CONTROL_SPANS=on` so the producers emit the control spans.
+DefenseClaw's latest gateway does emit its own guardrail span on the `/inspect/*` lane
+(`span.guardrail.apply`), but it does not land as a control span on this trace, for three
+reasons: (1) the gateway exports telemetry only when a v8 `observability.destinations[]`
+OTLP entry is configured (off by default; our minimal `policy.yaml` records to local
+SQLite only); (2) the inspect span is created as a fresh root — the inbound `traceparent`
+is read for audit correlation but deliberately not used as the OTel parent on REST routes
+(only the hook/notify loopback routes span-parent it); (3) `span.guardrail.apply` is in
+DefenseClaw's `local-observability-v1` profile only, not `galileo-rich-v2`, and DefenseClaw
+has no `agent_control.*`/`galileo.span.kind=control` concept, so it would not classify as
+an AO control span even if exported and parented. Fixing (1) is config on our side; (2)
+and (3) are DefenseClaw-side changes. Until then `AXIS_OTLP_CONTROL_SPANS=on` (the
+producers derive the control span) is the correct path — it is the only source of an
+AO-classifiable, on-trace control span, and it carries the DefenseClaw verdict enrichment
+described above.
